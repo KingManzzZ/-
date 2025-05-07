@@ -16,7 +16,7 @@ def call_api(model:str , prompt:str , retry_limit=3) -> str:
     for attempt in range(retry_limit):
         try:
             response = client.chat.completions.create(
-                model=setting[model]["model_name"],  # 可根据需要切换模型
+                model=setting[model]["model_name"], 
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.8,  # 控制生成随机性
                 top_p=0.95,
@@ -24,6 +24,6 @@ def call_api(model:str , prompt:str , retry_limit=3) -> str:
             )
             return response.choices[0].message.content
         except Exception as e:
-            print(f"API调用失败（第{attempt + 1}次重试）: {e}")
+            #print(f"API调用失败（第{attempt + 1}次重试）: {e}")
             time.sleep(4)  # 错误等待时间
     return ""  # 重试失败返回空值
