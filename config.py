@@ -1,4 +1,4 @@
-def call_api(model,prompt,retry_limit=3) -> str:
+def call_api(model,prompt,retry_limit=3) -> str:#输入（setting中的模型，提示内容）
     from setting import api_setting
     from openai import OpenAI
     import time
