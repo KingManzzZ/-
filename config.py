@@ -6,6 +6,18 @@ def call_api(model:str , prompt:str , retry_limit=3) -> str:
             "model_name": "deepseek-ai/DeepSeek-V3",
             "api_key": "sk-rwqwkqbrvrvfyhwqorevlobgotosfuywedkijzwzzqqlpwwh",
             "base_url": "https://api.siliconflow.cn/v1"},
+        "qwen-max": {
+            "model_name": "qwen-max",
+            "api_key": "sk-ba1ce076db94414a913606b7887d1539",
+            "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1"},
+        "qwen-plus": {
+            "model_name": "qwen-plus",
+            "api_key": "sk-ba1ce076db94414a913606b7887d1539",
+            "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1"},
+        "qwen-plus": {
+            "model_name": "qwen-plus",
+            "api_key": "sk-ba1ce076db94414a913606b7887d1539",
+            "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1"},
         "qwen-plus": {
             "model_name": "qwen-plus",
             "api_key": "sk-ba1ce076db94414a913606b7887d1539",
