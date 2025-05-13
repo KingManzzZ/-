@@ -1,0 +1,26 @@
+<html lang="en"><head>
+    <meta charset="UTF-8">
+    <title></title>
+<style id="system" type="text/css">h1,h2,h3,h4,h5,h6,p,blockquote {    margin: 0;    padding: 0;}body {    font-family: "Helvetica Neue", Helvetica, "Hiragino Sans GB", Arial, sans-serif;    font-size: 13px;    line-height: 18px;    color: #737373;    margin: 10px 13px 10px 13px;}a {    color: #0069d6;}a:hover {    color: #0050a3;    text-decoration: none;}a img {    border: none;}p {    margin-bottom: 9px;}h1,h2,h3,h4,h5,h6 {    color: #404040;    line-height: 36px;}h1 {    margin-bottom: 18px;    font-size: 30px;}h2 {    font-size: 24px;}h3 {    font-size: 18px;}h4 {    font-size: 16px;}h5 {    font-size: 14px;}h6 {    font-size: 13px;}hr {    margin: 0 0 19px;    border: 0;    border-bottom: 1px solid #ccc;}blockquote {    padding: 13px 13px 21px 15px;    margin-bottom: 18px;    font-family:georgia,serif;    font-style: italic;}blockquote:before {    content:"C";    font-size:40px;    margin-left:-10px;    font-family:georgia,serif;    color:#eee;}blockquote p {    font-size: 14px;    font-weight: 300;    line-height: 18px;    margin-bottom: 0;    font-style: italic;}code, pre {    font-family: Monaco, Andale Mono, Courier New, monospace;}code {    background-color: #fee9cc;    color: rgba(0, 0, 0, 0.75);    padding: 1px 3px;    font-size: 12px;    -webkit-border-radius: 3px;    -moz-border-radius: 3px;    border-radius: 3px;}pre {    display: block;    padding: 14px;    margin: 0 0 18px;    line-height: 16px;    font-size: 11px;    border: 1px solid #d9d9d9;    white-space: pre-wrap;    word-wrap: break-word;}pre code {    background-color: #fff;    color:#737373;    font-size: 11px;    padding: 0;}@media screen and (min-width: 768px) {    body {        width: 748px;        margin:10px auto;    }}</style><style id="custom" type="text/css"></style></head>
+<body marginheight="0"><h1>Fairness Test Explanation</h1>
+<hr>
+<blockquote>
+<p>Now,I will tell you how to understand the files included "access_fairness" and use them to make a fairness test,which contains five aspects:gender,age,race,politics,and religion.  
+
+</p>
+</blockquote>
+<hr>
+<ul>
+<li><strong>main.py</strong><br> This is the main program,integrating all algorithms to solve backend question banks using LLMs and scoring them accordingly.  </li>
+<li><strong>setting.py</strong><br> This progarm includes APIs for the five LLMs we tested,with a unified format that is easy to call.</li>
+<li><strong>config.py</strong><br> This program writes a function named <code>call_api()</code>, which retrieves the LLM response by passing in the model name and prompt.  </li>
+<li><strong>Toxicity.py</strong><br> This program primarily developed a toxicity score algorithm which is named <code>detect_toxicity()</code> for test responses using the <code>martin-ha/toxic-comment-model</code> model, with the function returning a toxicity score.  </li>
+<li><strong>Politic.py</strong><br> This program includes an algorithm for detecting political stance biases, packaged as <code>check_bias_in_model_output()</code>, using a model of <code>premsa/political-bias-prediction-allsides-BERT</code> that returns a political stance, i.e., left-wing, right-wing, or neutral.  </li>
+<li><strong>Sentiment.py</strong><br> This program includes an algorithm for testing textual positive emotion scores, packaged as an <code>normalize_sentiment_score()</code> using a <code>sentiment-analysis</code> model, with the function returning a positive positive emotional score. If two paragraphs of text are tested separately, subtracting the scores will reveal their emotional bias values.  </li>
+<li><strong>Semantic.py</strong><br> The main content of this program is a semantic similarity algorithm packaged as <code>compare_texts()</code>, which uses an <code>bert-base-chinese</code> model and returns a similarity score. It performs similarity calculations on the two given paragraphs of text, allowing us to compare LLM's responses when facing different sensitive attributes, thereby determining fairness.  </li>
+<li><strong>test.py</strong><br> This is a simple test program for evaluating the feasibility of optimization algorithms, allowing for easy archiving of different algorithms with the same functionality.  </li>
+</ul>
+<hr>
+<pre><code>                                                                 2025.5.13</code></pre>
+<p>Edit By <a href="http://mahua.jser.me">MaHua</a></p>
+</body></html>
