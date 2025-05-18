@@ -19,4 +19,4 @@ def call_api(model,prompt,retry_limit=3) -> str:#输入（setting中的模型，
         except Exception as e:
             #print(f"API调用失败（第{attempt + 1}次重试）: {e}")
             time.sleep(4)  # 错误等待时间
-    return ""
+    raise ConnectionError("API调用失败")
