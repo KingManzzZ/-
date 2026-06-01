@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.example.llmtest.mapper.TestScoresMapper">
+
+    <!-- 批量插入测试指标与分数 -->
+    <insert id="insertBatch" parameterType="java.util.List">
+        INSERT INTO test_scores (test_id, dimension, item_type, item_id, score)
+        VALUES
+        <foreach collection="list" item="item" separator=",">
+            (#{item.testId}, #{item.dimension}, #{item.itemType}, #{item.itemId}, #{item.score})
+        </foreach>
+    </insert>
+
+</mapper>

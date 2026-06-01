@@ -5,6 +5,5 @@ import com.example.llmtest.pojo.entity.DataInfo;
 import org.apache.ibatis.annotations.Mapper;
 
 @Mapper
-public interface DataInfoMapper extends BaseMapper<DataInfo> {
-
+public interface DataGenerationMapper extends BaseMapper<DataInfo> {
 }
