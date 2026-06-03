@@ -60,8 +60,7 @@ def split_text_into_chunks(text, max_chars=3000):
 
 
 def send_long_text_as_conversation(model, long_text, question, max_chars=3000):
-    """将长文本分块发送给模型，使用系统级消息堆叠优化逻辑
-    """
+    """将长文本分块发送给模型，使用系统级消息堆叠 + 中间轮次健康检查"""
     # 切割文本
     text_chunks = split_text_into_chunks(long_text, max_chars)
     print(f"长文本被切割为 {len(text_chunks)} 个块")
@@ -72,35 +71,110 @@ def send_long_text_as_conversation(model, long_text, question, max_chars=3000):
         {"role": "system", "content": "你是一个拥有超强记忆力的助手。接下来的消息将分段发送一段长文本，请你保持极简回复（仅回复OK），直到最后接收到具体的提问后，再根据全文内容进行详细回答。"}
     ]
 
-    # 逐块添加文本并发送，要求模型保持极简回复以减少上下文污染
+    # 逐块发送，增加健康检查
+    failed_chunks = 0
     for idx, chunk in enumerate(text_chunks):
         content = f"[长文本数据 {idx + 1}/{len(text_chunks)}]:\n\n{chunk}"
         messages.append({"role": "user", "content": content})
 
         # 实时发送并获取简单的确认，确保模型“看到”了这部分数据
         response = call_api(model, None, messages=messages)
-        print(f"第 {idx + 1} 块发送完成，模型状态: {response.strip()[:10]}")
+        response_stripped = response.strip() if response else ""
+        print(f"第 {idx + 1} 块发送完成，模型状态: {response_stripped[:10]}")
 
-        # 将模型简单的确认存入历史
-        messages.append({"role": "assistant", "content": response})
+        # 健康检查：空响应或错误标识时记录
+        if not response_stripped or "error" in response_stripped.lower():
+            failed_chunks += 1
+            print(f"  ⚠️ 第 {idx + 1} 块响应异常，已累计 {failed_chunks} 次失败")
+            if failed_chunks >= 3:
+                print("  ❌ 连续失败过多，终止分块发送")
+                return None
+            messages.append({"role": "assistant", "content": "OK"})
+        else:
+            failed_chunks = 0
+            messages.append({"role": "assistant", "content": response})
 
-        # 避免请求频率过快
         time.sleep(0.5)
 
     # 最终提问
     final_query = f"以上是全部参考文本。现在请回答问题：{question}"
     messages.append({"role": "user", "content": final_query})
 
-    # 调用 API 获取最终详细答案
     final_answer = call_api(model, None, messages=messages)
     return final_answer
 
 
+JUDGE_MODEL = "Qwen-max"
+FUZZY_LOW = 0.3
+FUZZY_HIGH = 0.7
+
+
+def tokenize_chinese(text):
+    """简易中英文分词：中文按字切分，英文按空格/标点切分，统一小写"""
+    tokens = []
+    for char in text:
+        if '\u4e00' <= char <= '\u9fff':
+            tokens.append(char)
+        elif char.isalnum():
+            if tokens and tokens[-1].isalnum():
+                tokens[-1] += char
+            else:
+                tokens.append(char)
+    return [t.lower() for t in tokens if t.strip()]
+
+
+def compute_f1(prediction, reference):
+    """计算 token 级 F1-score"""
+    pred_tokens = tokenize_chinese(prediction)
+    ref_tokens = tokenize_chinese(reference)
+
+    if not pred_tokens or not ref_tokens:
+        return 1.0 if pred_tokens == ref_tokens else 0.0
+
+    common = set(pred_tokens) & set(ref_tokens)
+    num_common = sum(min(pred_tokens.count(t), ref_tokens.count(t)) for t in common)
+
+    if num_common == 0:
+        return 0.0
+
+    precision = num_common / len(pred_tokens)
+    recall = num_common / len(ref_tokens)
+    f1 = 2 * precision * recall / (precision + recall)
+    return f1
+
+
+def llm_judge_score(pred, ref, question, judge_model=JUDGE_MODEL):
+    """LLM Judge：仅在 F1 落在模糊区间时触发"""
+    judge_prompt = (
+        f"你是一个阅读理解评测专家。请判定[模型回答]是否正确回答了[问题]。\n\n"
+        f"[问题]: {question}\n"
+        f"[参考答案]: {ref}\n"
+        f"[模型回答]: {pred}\n\n"
+        f"评分标准：\n"
+        f"- 1.0：语义完全正确\n"
+        f"- 0.7-0.9：核心信息正确，有少量遗漏\n"
+        f"- 0.4-0.6：部分正确，缺少关键信息\n"
+        f"- 0.1-0.3：大部分错误\n"
+        f"- 0.0：完全错误\n\n"
+        f"请严格按照以下格式返回：【分数】你的评分数字"
+    )
+    try:
+        response = call_api(judge_model, judge_prompt, temperature=0.1)
+        match = re.search(r"【分数】\s*([01](?:\.\d+)?|0?\.\d+)", response)
+        if match:
+            return float(match.group(1))
+        fallback = re.findall(r"\b(0(?:\.\d+)?|1(?:\.0+)?)\b", response)
+        if fallback:
+            return float(fallback[-1])
+    except Exception as e:
+        print(f"裁判模型调用失败: {e}")
+    return None
+
+
 def deal(model, item):
-    """处理单个测试项，针对长文本记忆稳定性"""
+    """处理单个测试项：分块发送 + F1-score + 模糊区间触发 LLM Judge"""
     print("----- [记忆能力] 处理第{}条数据 -----".format(item['rowIdx'] + 1))
 
-    # 获取长文本和问题
     long_text = item.get('context', '') or item.get('text', '') or item.get('question', '')
     if isinstance(long_text, dict):
         long_text = long_text.get('content', '') or long_text.get('text', '')
@@ -114,22 +188,32 @@ def deal(model, item):
         return "ERROR", 0.0
 
     try:
-        # 使用分块发送的方式处理长文本（保持原有的大海捞针/分块逻辑）
         answer = send_long_text_as_conversation(model, long_text, question)
-        print(f"模型回答摘要: {answer[:100]}...")
 
-        # 结果判定：基于子串匹配
+        # 健康检查：分块发送失败时返回 None
+        if answer is None:
+            print("分块发送失败，跳过此题")
+            return "ERROR", 0.0
+
+        print(f"模型回答摘要: {answer[:100]}...")
         standard_answer = str(item.get('answer', ''))
 
-        # 精确或子串包含
+        # L1：精确/子串匹配
         if standard_answer in answer or answer in standard_answer:
             return answer, 1.0
-        else:
-            # 关键词柔性分
-            keywords = standard_answer.split(',')
-            match_count = sum(1 for kw in keywords if kw.strip() in answer)
-            score = match_count / len(keywords) if keywords else 0
-            return answer, score
+
+        # L2：F1-score
+        f1 = compute_f1(answer, standard_answer)
+
+        # L3：模糊区间触发 LLM Judge
+        if FUZZY_LOW < f1 < FUZZY_HIGH:
+            judge_result = llm_judge_score(answer, standard_answer, question)
+            if judge_result is not None:
+                f1 = judge_result
+                print(f"  → LLM Judge 触发，裁判评分: {judge_result}")
+
+        print(f"  F1 得分: {f1:.3f}")
+        return answer, f1
     except Exception as e:
         print(f"处理失败: {e}")
         return "ERROR", 0.0

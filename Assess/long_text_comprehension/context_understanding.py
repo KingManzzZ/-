@@ -7,21 +7,101 @@ import re
 # 统一导入处理
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from config import call_api
-from largemodel_create_and_evaluate.promot_hub import prompt_hub
+
+# LLM Judge 仅在模糊区间触发
+JUDGE_MODEL = "Qwen-max"
+FUZZY_LOW = 0.3
+FUZZY_HIGH = 0.7
+
+
+def tokenize_chinese(text):
+    """
+    简易中英文分词：中文按字切分，英文按空格/标点切分，统一小写
+    """
+    tokens = []
+    for char in text:
+        if '\u4e00' <= char <= '\u9fff':
+            tokens.append(char)
+        elif char.isalnum():
+            if tokens and tokens[-1].isalnum():
+                tokens[-1] += char
+            else:
+                tokens.append(char)
+    return [t.lower() for t in tokens if t.strip()]
+
+
+def compute_f1(prediction, reference):
+    """
+    计算 token 级 F1-score（SQuAD 标准做法）
+    """
+    pred_tokens = tokenize_chinese(prediction)
+    ref_tokens = tokenize_chinese(reference)
+
+    if not pred_tokens or not ref_tokens:
+        return 1.0 if pred_tokens == ref_tokens else 0.0
+
+    common = set(pred_tokens) & set(ref_tokens)
+    num_common = sum(min(pred_tokens.count(t), ref_tokens.count(t)) for t in common)
+
+    if num_common == 0:
+        return 0.0
+
+    precision = num_common / len(pred_tokens)
+    recall = num_common / len(ref_tokens)
+    f1 = 2 * precision * recall / (precision + recall)
+    return f1
+
+
+def llm_judge_score(pred, ref, question, judge_model=JUDGE_MODEL):
+    """
+    LLM Judge：仅在 F1 落在模糊区间时触发，节省 token
+    """
+    judge_prompt = (
+        f"你是一个阅读理解评测专家。请判定[模型回答]是否正确回答了[问题]。\n\n"
+        f"[问题]: {question}\n"
+        f"[参考答案]: {ref}\n"
+        f"[模型回答]: {pred}\n\n"
+        f"评分标准：\n"
+        f"- 1.0：语义完全正确，表述可以不同但意思一致\n"
+        f"- 0.7-0.9：核心信息正确，有少量遗漏或冗余\n"
+        f"- 0.4-0.6：部分正确，缺少关键信息或有错误\n"
+        f"- 0.1-0.3：大部分错误，仅有零星正确信息\n"
+        f"- 0.0：完全错误或无关\n\n"
+        f"请严格按照以下格式返回：【分数】你的评分数字"
+    )
+    try:
+        response = call_api(judge_model, judge_prompt, temperature=0.1)
+        match = re.search(r"【分数】\s*([01](?:\.\d+)?|0?\.\d+)", response)
+        if match:
+            return float(match.group(1))
+        fallback = re.findall(r"\b(0(?:\.\d+)?|1(?:\.0+)?)\b", response)
+        if fallback:
+            return float(fallback[-1])
+    except Exception as e:
+        print(f"裁判模型调用失败: {e}")
+    return None
 
 
 def deal(model, item):
     """
-    上下文理解模块的处理逻辑。
-    要求模型在长文本中理解隐含的因果、情感或主题。
+    上下文理解评测：长文本传入 + F1-score + 模糊区间触发 LLM Judge
     """
     print(f"----- [上下文理解] 处理第{item['rowIdx'] + 1}条数据 -----")
 
-    # 强化 Prompt，要求模型进行上下文关联思考
+    # 获取长文本上下文
+    context = item.get('context', '') or item.get('text', '') or ''
+    if isinstance(context, dict):
+        context = context.get('content', '') or context.get('text', '')
+
+    question = item.get('question', '') or item.get('query', '')
+    if isinstance(question, dict):
+        question = question.get('content', '') or question.get('query', '')
+
+    # 构建 prompt，确保长文本被传入
     prompt = (
         f"请基于以下提供的长文本内容进行深度理解，并回答问题。\n\n"
-        f"由于文本较长，请特别注意上下文之间的逻辑关联、隐含情感或主题。\n"
-        f"问题：{item['question']}\n\n"
+        f"【长文本】\n{context}\n\n"
+        f"【问题】{question}\n\n"
         f"要求：说明你的理由，最后以'【答案】选项/内容'的形式结束。"
     )
 
@@ -29,20 +109,28 @@ def deal(model, item):
         answer = call_api(model, prompt)
         print(f"模型回答: {answer[:100]}...")
 
-        # 结果判定：支持选择题和简答题
-        standard_answer = str(item['answer'])
-        # 提取【答案】后的内容
-        match = re.search(r"【答案】\s*(.+)", answer)
-        pred = match.group(1).strip() if match else answer
+        standard_answer = str(item.get('answer', ''))
 
-        if standard_answer in pred or pred in standard_answer:
+        # 提取【答案】后的内容作为预测
+        match = re.search(r"【答案】\s*(.+)", answer, re.DOTALL)
+        pred = match.group(1).strip().split('\n')[0] if match else answer
+
+        # L1：精确匹配
+        if standard_answer.strip() == pred.strip():
             return answer, 1.0
-        else:
-            # 柔性判定：如果关键词匹配成功
-            keywords = standard_answer.split(',') # 假设简答题答案以逗号分隔关键词
-            match_count = sum(1 for kw in keywords if kw.strip() in answer)
-            score = match_count / len(keywords) if keywords else 0
-            return answer, score
+
+        # L2：F1-score
+        f1 = compute_f1(pred, standard_answer)
+
+        # L3：模糊区间触发 LLM Judge
+        if FUZZY_LOW < f1 < FUZZY_HIGH:
+            judge_result = llm_judge_score(pred, standard_answer, question)
+            if judge_result is not None:
+                f1 = judge_result
+                print(f"  → LLM Judge 触发，裁判评分: {judge_result}")
+
+        print(f"  F1 得分: {f1:.3f}")
+        return answer, f1
     except Exception as e:
         print(f"上下文理解请求失败: {e}")
         return "ERROR", 0.0

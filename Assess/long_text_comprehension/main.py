@@ -17,22 +17,30 @@ def evaluate(model, qs_list):
         'memory_retention': []
     }
 
-    # 根据 min_metric 或其他标识进行分组
-    # 假设数据集中的 min_metric 对应如下：
-    # context_understanding: 上下文理解
-    # information_extraction: 信息提取
-    # memory_retention: 记忆能力
+    # 精确 metric 映射表（避免模糊 in 匹配导致误分组）
+    metric_mapping = {
+        'context_understanding': 'context_understanding',
+        'information_extraction': 'information_extraction',
+        'memory_retention': 'memory_retention',
+    }
+
     for item in qs_list:
-        metric = item.get("min_metric", "")
-        if "context" in metric.lower():
-            groups['context_understanding'].append(item)
-        elif "extract" in metric.lower():
-            groups['information_extraction'].append(item)
-        elif "memory" in metric.lower() or "retention" in metric.lower():
-            groups['memory_retention'].append(item)
+        metric = item.get("min_metric", "").strip()
+        target_group = metric_mapping.get(metric)
+
+        if target_group:
+            groups[target_group].append(item)
         else:
-            # 默认分组逻辑，可以根据实际情况调整
-            groups['context_understanding'].append(item)
+            # 模糊匹配兜底（保持向后兼容）
+            metric_lower = metric.lower()
+            if "context" in metric_lower and "extract" not in metric_lower:
+                groups['context_understanding'].append(item)
+            elif "extract" in metric_lower:
+                groups['information_extraction'].append(item)
+            elif "memory" in metric_lower or "retention" in metric_lower:
+                groups['memory_retention'].append(item)
+            else:
+                groups['context_understanding'].append(item)
 
     all_response = []
     scores = {
@@ -41,48 +49,45 @@ def evaluate(model, qs_list):
         'memory_retention': 0.0
     }
 
-    # 各子指标权重 (可根据需求调整，当前设为均权或 4:3:3)
-    weights = {
+    # 基础权重配置
+    base_weights = {
         'context_understanding': 0.4,
         'information_extraction': 0.3,
         'memory_retention': 0.3
     }
 
-    # 1. 上下文理解评测
-    if groups['context_understanding']:
-        try:
-            print(f"开始评测 [上下文理解] (数量: {len(groups['context_understanding'])})")
-            resp, score = context_understanding.evaluate(model, groups['context_understanding'])
-            scores['context_understanding'] = score
-            all_response.extend(resp)
-        except Exception as e:
-            print(f"上下文理解评测出错: {e}")
+    # 子模块映射
+    module_mapping = {
+        'context_understanding': context_understanding,
+        'information_extraction': extract,
+        'memory_retention': memory_retention,
+    }
 
-    # 2. 信息提取评测
-    if groups['information_extraction']:
+    # 执行各子指标评测
+    active_keys = []
+    for key in groups:
+        if not groups[key]:
+            print(f"指标 {key} 没有测试数据，将重新分配其权重。")
+            continue
         try:
-            print(f"开始评测 [信息提取] (数量: {len(groups['information_extraction'])})")
-            resp, score = extract.evaluate(model, groups['information_extraction'])
-            scores['information_extraction'] = score
+            print(f"开始评测 [{key}] (数量: {len(groups[key])})")
+            resp, score = module_mapping[key].evaluate(model, groups[key])
+            scores[key] = score
             all_response.extend(resp)
+            active_keys.append(key)
         except Exception as e:
-            print(f"信息提取评测出错: {e}")
-
-    # 3. 记忆能力评测
-    if groups['memory_retention']:
-        try:
-            print(f"开始评测 [记忆能力] (数量: {len(groups['memory_retention'])})")
-            resp, score = memory_retention.evaluate(model, groups['memory_retention'])
-            scores['memory_retention'] = score
-            all_response.extend(resp)
-        except Exception as e:
-            print(f"记忆能力评测出错: {e}")
+            print(f"{key} 评测出错: {e}")
 
     # 按照 dataId 排序
     all_response.sort(key=lambda x: x.get("dataId", 0))
 
-    # 计算总分
-    final_score = sum(scores[k] * weights[k] for k in weights)
+    # 动态权重归一化：仅在有数据的类别间按比例分配
+    if active_keys:
+        total_active_weight = sum(base_weights[k] for k in active_keys)
+        normalized_weights = {k: base_weights[k] / total_active_weight for k in active_keys}
+        final_score = sum(scores[k] * normalized_weights[k] for k in active_keys)
+    else:
+        final_score = 0.0
 
     final_report = {
         'context_understanding': round(scores['context_understanding'], 2),

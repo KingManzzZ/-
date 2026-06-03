@@ -5,32 +5,106 @@ import sys
 # 统一导入处理
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from config import call_api
-# 改为使用专用的数学推理评测模型
-try:
-    from model.math_judge_model import get_math_similarity
-except ImportError:
-    # 尝试不同路径层级的引用
+
+# 裁判模型，用于评估推理过程的逻辑正确性
+JUDGE_MODEL = "Qwen-max"
+
+
+def normalize_number(text):
+    """
+    增强数值提取和标准化：支持分数、百分比、科学计数法等
+    返回 float 或 None
+    """
+    if not text:
+        return None
+    text = text.strip().replace(",", "").replace(" ", "")
+
+    # 百分比
+    pct_match = re.match(r"^([-+]?\d*\.?\d+)\s*%$", text)
+    if pct_match:
+        return float(pct_match.group(1)) / 100.0
+
+    # 分数
+    frac_match = re.match(r"^([-+]?\d+)\s*/\s*(\d+)$", text)
+    if frac_match:
+        denom = float(frac_match.group(2))
+        if denom != 0:
+            return float(frac_match.group(1)) / denom
+        return None
+
+    # 科学计数法或普通数字
     try:
-        sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "model"))
-        from math_judge_model import get_math_similarity
-    except:
-        from content_model import compare_texts as get_math_similarity
+        return float(text)
+    except ValueError:
+        return None
+
+
+def numbers_equal(num_str1, num_str2, tolerance=1e-6):
+    """
+    判断两个数值字符串是否在容差范围内相等
+    """
+    val1 = normalize_number(num_str1)
+    val2 = normalize_number(num_str2)
+
+    if val1 is None or val2 is None:
+        return str(num_str1).strip() == str(num_str2).strip()
+
+    if val2 == 0:
+        return abs(val1) < tolerance
+
+    return abs(val1 - val2) / max(abs(val2), 1e-10) < tolerance
+
+
+def judge_reasoning_process(pred_process, ref_process, question, judge_model=JUDGE_MODEL):
+    """
+    使用裁判模型评估推理过程的逻辑正确性，返回 0-1 的分数
+    """
+    if not ref_process or not ref_process.strip():
+        return None  # 无参考过程时返回 None，由调用方决定如何处理
+
+    judge_prompt = (
+        f"你是一个数学推理评测专家。请评估[模型解题过程]的逻辑正确性。\n\n"
+        f"[题目]: {question}\n"
+        f"[参考解题过程]: {ref_process}\n"
+        f"[模型解题过程]: {pred_process}\n\n"
+        f"评分标准：\n"
+        f"- 1.0：推理逻辑完全正确，步骤清晰合理\n"
+        f"- 0.7-0.9：推理方向正确，有小瑕疵但不影响逻辑链\n"
+        f"- 0.4-0.6：部分推理正确，但存在逻辑漏洞或方法不当\n"
+        f"- 0.1-0.3：推理方向基本错误，仅有零星正确步骤\n"
+        f"- 0.0：完全错误或无关内容\n\n"
+        f"注意：不同的解法思路只要逻辑正确都应给高分，不要求和参考过程完全一致。\n"
+        f"请严格按照以下格式返回：【分数】你的评分数字"
+    )
+
+    try:
+        response = call_api(judge_model, judge_prompt, temperature=0.1)
+        match = re.search(r"【分数】\s*([01](?:\.\d+)?)", response)
+        if match:
+            return float(match.group(1))
+
+        # 备用匹配：直接找 0-1 之间的数字
+        fallback = re.findall(r"\b(0(?:\.\d+)?|1(?:\.0+)?)\b", response)
+        if fallback:
+            return float(fallback[-1])
+    except Exception as e:
+        print(f"裁判模型调用失败: {e}")
+
+    return None  # 裁判失败时返回 None
+
 
 def deal(model, item):
     """
-    数学推理评测：整合推理过程相似度与最终结果匹配度
-    使用 MathBERT 实现高精度的过程逻辑判定
+    数学推理评测：LLM-as-Judge 评估过程 + 增强数值匹配 + 合理计分公式
     """
     try:
         r_parts = item['answer'].split("#### ")
-        r_process = r_parts[0]
+        r_process = r_parts[0].strip()
         r_answer = r_parts[1].strip()
-    except:
-        # 兼容简易格式的参考答案
+    except (IndexError, AttributeError):
         r_process = ""
         r_answer = str(item['answer']).strip()
 
-    # 此处优化了 prompt，加入更强的风格约束
     add_prompt = (
         f"请逐步解答以下数学题。确保最后一行以'#### 数字'的格式给出最终数值答案。\n"
         f"题目：{item['question']}\n"
@@ -40,41 +114,45 @@ def deal(model, item):
     try:
         answer = call_api(model, add_prompt)
 
-        #--- 提取预测结果与过程 ---
+        # --- 提取预测结果与过程 ---
         process = answer
         num = ""
         if "####" in answer:
             parts = answer.split("####")
             process = parts[0].strip()
-            # 强化正则匹配提取最后一个数值
-            num_match = re.search(r"[-+]?\d*\.?\d+", parts[-1])
-            num = num_match.group() if num_match else ""
+            num_match = re.search(r"[-+]?\d[\d,]*\.?\d*(?:/\d+)?(?:%)?", parts[-1])
+            num = num_match.group().replace(",", "") if num_match else ""
         else:
-            # 备用：从全文最后一个数值尝试匹配
-            all_nums = re.findall(r"[-+]?\d*\.?\d+", answer)
-            num = all_nums[-1] if all_nums else ""
+            all_nums = re.findall(r"[-+]?\d[\d,]*\.?\d*", answer)
+            num = all_nums[-1].replace(",", "") if all_nums else ""
 
-        #--- 结果与过程判定 ---
-        # 1. 语义相似度 (Similarity)：50分权重，针对过程逻辑
-        similar = get_math_similarity(process, r_process) if r_process else 1.0
+        # --- 数值匹配判定 ---
+        is_match = numbers_equal(num, r_answer)
 
-        # 2. 数值匹配
-        try:
-            # 尝试数值化对比，忽略小数点位数差异
-            is_match = abs(float(num) - float(r_answer)) < 1e-6
-        except:
-            # 兜底字符串对比
-            is_match = (str(num).strip() == str(r_answer).strip())
+        # --- 推理过程评估 ---
+        process_score = judge_reasoning_process(process, r_process, item['question'])
 
-        #--- 计分模型 ---
+        # --- 计分模型（百分制） ---
+        # 答案正确 + 过程优秀：满分
+        # 答案正确 + 无过程评估：给予较高基础分（70）
+        # 答案错误 + 过程优秀：给予中等分数（最高50）
+        # 答案错误 + 过程差：低分
         if is_match:
-            # 结果正确：50基础分 + 过程相关性奖励分
-            score = 50 + (50 * similar)
+            if process_score is not None:
+                # 答案对：70基础分 + 30分过程加成
+                score = 70 + (30 * process_score)
+            else:
+                # 无法评估过程但答案对：给 75 分（不满分，避免蒙对高分）
+                score = 75.0
         else:
-            # 结果错误：仅根据推理逻辑给予少量分（最高不超过30分）
-            score = 30 * similar
+            if process_score is not None:
+                # 答案错但过程有价值：最高 50 分
+                score = 50 * process_score
+            else:
+                score = 0.0
 
-        print(f"[数学评测] 模型预测: {num}, 参考: {r_answer} | 相似度: {similar:.2f} | 得分: {score:.2f}")
+        print(f"[数学评测] 模型预测: {num}, 参考: {r_answer} | "
+              f"数值匹配: {is_match} | 过程评分: {process_score} | 得分: {score:.2f}")
         return answer, score
 
     except Exception as e:

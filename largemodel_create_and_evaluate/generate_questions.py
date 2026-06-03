@@ -102,14 +102,14 @@ class QuestionBankGenerator:
 
     @staticmethod
     def _parse_response(response: str) -> Dict:
-        """优化后的响应解析，支持清理 Markdown 代码块和多个 JSON 对象"""
+        """使用 json.JSONDecoder.raw_decode 精确提取第一个 JSON 对象"""
         try:
             if not response:
                 return {}
 
             clean_res = response.strip()
 
-            # 处理 Markdown 格式
+            # 处理 Markdown 代码块包裹
             if clean_res.startswith("```"):
                 if "json" in clean_res[:10]:
                     clean_res = clean_res.split("json", 1)[1]
@@ -117,65 +117,26 @@ class QuestionBankGenerator:
                     clean_res = clean_res.split("```", 1)[1]
                 clean_res = clean_res.rsplit("```", 1)[0].strip()
 
-            # 提取第一个完整的 JSON 对象
-            # 使用括号匹配来找到第一个完整的对象
+            # 定位第一个 { 的位置
             start = clean_res.find('{')
             if start == -1:
                 return {}
 
-            # 从 { 开始，计数括号来找到匹配的 }
-            brace_count = 0
-            in_string = False
-            escape_next = False
-            end = -1
+            # 使用 raw_decode 精确解析第一个完整 JSON 对象
+            decoder = json.JSONDecoder()
+            result, _ = decoder.raw_decode(clean_res, start)
 
-            for i in range(start, len(clean_res)):
-                char = clean_res[i]
-
-                # 处理转义字符
-                if escape_next:
-                    escape_next = False
-                    continue
-
-                if char == '\\':
-                    escape_next = True
-                    continue
-
-                # 处理字符串状态
-                if char == '"' and not escape_next:
-                    in_string = not in_string
-                    continue
-
-                # 只在字符串外计算括号
-                if not in_string:
-                    if char == '{':
-                        brace_count += 1
-                    elif char == '}':
-                        brace_count -= 1
-                        if brace_count == 0:
-                            end = i + 1
-                            break
-
-            if end == -1:
-                # 如果没找到匹配的括号，使用原有方法
-                end = clean_res.rfind('}') + 1
-
-            json_str = clean_res[start:end]
-            return json.loads(json_str)
+            if isinstance(result, dict):
+                return result
+            return {}
 
         except json.JSONDecodeError as e:
             print(f"\n❌ JSON 解析失败: {e}")
-            print(f"\n响应内容（前500字）：")
-            print("-"*80)
-            print(response[:500])
-            print("-"*80)
+            print(f"响应内容（前300字）：{response[:300]}")
             return {}
         except Exception as e:
             print(f"\n❌ 解析响应失败: {e}")
-            print(f"\n响应内容（前500字）：")
-            print("-"*80)
-            print(response[:500])
-            print("-"*80)
+            print(f"响应内容（前300字）：{response[:300]}")
             return {}
 
     def _validate_question(self, q_type: str, question: Dict):
@@ -204,22 +165,38 @@ class QuestionBankGenerator:
         return None
 
     def generate_question_bank(self, domain: str, weights_set, example: str, target_count: int, connect_model: str) -> None:
-        """生成题目集合"""
+        """生成题目集合，带最大尝试次数防止死循环"""
         generated = 0
         rowidx = 0
+        total_attempts = 0
+        max_attempts = target_count * 3  # 最多尝试 3 倍目标数量
+        consecutive_failures = 0
+        max_consecutive_failures = 10
+
         print(f"\n📝 开始生成题库")
         print(f"   评估维度: {domain}")
         print(f"   目标数量: {target_count} 道\n")
 
         while generated < target_count:
+            if total_attempts >= max_attempts:
+                print(f"\n⚠️ 已达最大尝试次数 ({max_attempts})，停止生成。已生成 {generated}/{target_count} 道。")
+                break
+            if consecutive_failures >= max_consecutive_failures:
+                print(f"\n⚠️ 连续失败 {consecutive_failures} 次，停止生成。已生成 {generated}/{target_count} 道。")
+                break
+
             batch_size = min(10, target_count - generated)
             success_count = 0
 
             for _ in range(batch_size):
+                total_attempts += 1
                 if self.generate_question(domain, weights_set, rowidx, example, connect_model):
                     success_count += 1
+                    consecutive_failures = 0
                     show_progress(generated + success_count, target_count)
                     rowidx += 1
+                else:
+                    consecutive_failures += 1
 
             generated += success_count
 
@@ -242,15 +219,18 @@ class QuestionBankGenerator:
         return file_path
 
     def final(self, data):
-        domain=f"有关{data["dimension"]}"
-        domain=domain+f"中的{data["metric"]}" if "metric" in data.keys() else domain
-        domain=domain+f"的{data['sub_metric']}" if "sub_metric" in data.keys() else domain
-        weights_set=data['weights_set']
-        example=data['example']
-        if "model" not in data.keys():
-            model0 = "DeepSeek-V3"
-        else:
-            model0 = data["model"]
+        dimension = data['dimension']
+        domain = f"有关{dimension}"
+        metric = data.get('metric', '')
+        sub_metric = data.get('sub_metric', '')
+        if metric:
+            domain += f"中的{metric}"
+        if sub_metric:
+            domain += f"的{sub_metric}"
+
+        weights_set = data['weights_set']
+        example = data.get('example', '')
+        model0 = data.get('model', 'DeepSeek-V3')
 
         self.generate_question_bank(domain, weights_set, example, data['count'], model0)
         return self.generated_questions

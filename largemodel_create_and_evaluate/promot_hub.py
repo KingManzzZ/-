@@ -16,39 +16,38 @@ Generator_prompts = {
     }
 
 demo = {
-    "choice":"""输出格式示例：
+    "choice": """输出格式示例：
         {
             "question": "问题文本",
             "options": ["A: 选项1", "B: 选项2", "C: 选项3", "D: 选项4"],
-            "answer": "A"
-            "process":"变形过程"
+            "answer": "A",
+            "process": "变形过程"
         }""",
     "judgment": """输出格式示例：
         {
             "question": "陈述句",
-            "answer": "正确"
-            "process":"变形过程"
+            "answer": "正确",
+            "process": "变形过程"
         }""",
     "short_answer": """输出格式示例：
         {
             "question": "开放性问题文本",
-            "answer": "答案的关键要点"
-            "process":"变形过程"
+            "answer": "答案的关键要点",
+            "process": "变形过程"
         }""",
     "only_question": """输出格式示例：
         {
-            "question": "开放性问题文本"
-            "process":"变形过程"
+            "question": "开放性问题文本",
+            "process": "变形过程"
         }""",
     "compare_question": """输出格式示例：
         {
-               "question": 
-               {
-               "A":"开放性问题1"
-               "B":"开放性问题2"
-               }
-               "process":"变形过程"
-           }"""
+            "question": {
+                "A": "开放性问题1",
+                "B": "开放性问题2"
+            },
+            "process": "变形过程"
+        }"""
 }
 
 # 题型特定的生成提示词

@@ -46,7 +46,7 @@ class ThreadSafeLogger:
     def get_logger(self):
         return self.logger
 
-class MoudleManager:
+class ModelManager:
     def __init__(self):
         self.models = ["DeepSeek-V3", "Qwen-max", 'yi-lightning', "ERNIE-4.0-8k", "gpt-4o-mini"]
         # 使用信号量来控制模型并发访问频率（每个模型同时只允许一个请求，类似原有独占逻辑）
@@ -90,7 +90,7 @@ class QuestionsEvolution:
             "complicate": self.complex_evolutions
         }
         self.questions = []
-        self.model_manager = MoudleManager()
+        self.model_manager = ModelManager()
         self.logger = ThreadSafeLogger().get_logger()
         # 初始化异步客户端
         self.clients = self._init_clients()
@@ -150,29 +150,34 @@ class QuestionsEvolution:
 
     @staticmethod
     def _parse_response(response: str):
+        """使用 raw_decode 精确提取第一个 JSON 对象"""
         try:
-            # 预处理：移除模型可能在 JSON 外包裹的括号说明或 Markdown 标记
             clean_res = response.strip()
             if clean_res.startswith("```json"):
                 clean_res = clean_res.split("```json")[1].split("```")[0].strip()
             elif clean_res.startswith("```"):
                 clean_res = clean_res.split("```")[1].split("```")[0].strip()
 
-            # 移除所有可能的括号后缀解释 (例如 "题目文本 (已改写)")
-            # 这种正则会匹配 JSON 字符串值内部结尾的括号并尝试清理
-            # 更好的做法是在 Prompt 中强制约束，此处作为兜底
+            start = clean_res.find('{')
+            if start == -1:
+                return None
 
-            fixed = re.sub(r'}\s*{', '},{', clean_res)
-            fixed = f"[{fixed}]"
-            print(fixed)
-            start = fixed.find("{")
-            end = fixed.rfind("}")
-            fixed = fixed[start:end + 1]
+            decoder = json.JSONDecoder()
+            result, _ = decoder.raw_decode(clean_res, start)
 
-            return json.loads(fixed)
+            # 统一返回 dict：如果解析出 list，取第一个 dict 元素
+            if isinstance(result, dict):
+                return result
+            elif isinstance(result, list) and result:
+                first_item = result[0]
+                return first_item if isinstance(first_item, dict) else None
+            return None
 
+        except json.JSONDecodeError as e:
+            print(f"JSON 解析失败: {e}")
+            return None
         except Exception as e:
-            print("发生未预期错误：", str(e))
+            print(f"解析响应时发生未预期错误: {e}")
             return None
 
     async def async_call_api(self, model: str, messages: List[Dict]) -> str:
@@ -222,40 +227,57 @@ class QuestionsEvolution:
                 item['status'] = "fail"
                 return item
 
-    async def process_all_async(self, data: List[Dict]):
-        """使用异步队列和任务池处理所有数据"""
+    async def process_all_async(self, data: List[Dict], max_retries: int = 3):
+        """使用异步队列和任务池处理所有数据，带最大重试限制"""
         results = []
         pending_items = list(data)
+
+        # 为每个 item 初始化重试计数
+        for item in pending_items:
+            if '_retry_count' not in item:
+                item['_retry_count'] = 0
 
         while pending_items:
             active_models = self.model_manager.get_active_models()
             if not active_models:
-                self.logger.error("无可用模型")
+                self.logger.error("无可用模型，终止处理")
+                # 将剩余项标记为失败
+                for item in pending_items:
+                    item['status'] = 'fail'
+                    results.append(item)
                 break
 
             tasks = []
-            # 将待处理项分配给可用模型
-            for i, item in enumerate(pending_items[:]):
+            for i, item in enumerate(pending_items):
                 model = active_models[i % len(active_models)]
                 sem = self.model_manager.model_semaphores[model]
                 tasks.append(self.evolve_task(item, sem, model))
 
-            # 运行当前批次
             batch_results = await asyncio.gather(*tasks)
 
-            # 检查结果，筛选出失败项以便重试
+            # 检查结果，超过重试上限的直接标记失败
             pending_items = []
             for res in batch_results:
                 if res and res.get('status') == 'success':
+                    # 清理内部字段后加入结果
+                    res.pop('_retry_count', None)
                     results.append(res)
                 else:
-                    # 重新放入待处理列表 (可以限制重试次数，此处简化处理)
-                    # 实际生产中建议在 item 中记录 retry_count
-                    pending_items.append(res)
+                    retry_count = res.get('_retry_count', 0) + 1 if res else max_retries
+                    if retry_count >= max_retries:
+                        self.logger.warning(f"题目重试 {max_retries} 次仍失败，跳过")
+                        if res:
+                            res['status'] = 'fail'
+                            res.pop('_retry_count', None)
+                            results.append(res)
+                    else:
+                        if res:
+                            res['_retry_count'] = retry_count
+                        pending_items.append(res)
 
             if pending_items:
                 self.logger.info(f"等待重试项数量: {len(pending_items)}")
-                await asyncio.sleep(1) # 避免由于频率限制导致的连续失败
+                await asyncio.sleep(1)
 
         return results
 

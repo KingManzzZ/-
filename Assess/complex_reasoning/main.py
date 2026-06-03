@@ -39,13 +39,14 @@ def evaluate(model, qs_list):
         'math': math
     }
 
-    # 权重配置
-    weights = {'causality': 0.3, 'logic': 0.3, 'math': 0.4}
+    # 基础权重配置
+    base_weights = {'causality': 0.3, 'logic': 0.3, 'math': 0.4}
 
     # 执行子项评估
+    active_keys = []
     for key, items in data_groups.items():
         if not items:
-            print(f"指标 {key} 没有测试数据。")
+            print(f"指标 {key} 没有测试数据，将重新分配其权重。")
             continue
 
         try:
@@ -53,21 +54,29 @@ def evaluate(model, qs_list):
             run_module = module_mapping[key]
             resp, score = run_module.evaluate(model, items)
 
-            # 记录结果，score 已统一为百分制
             scores[key] = float(score)
             all_response.extend(resp)
+            active_keys.append(key)
         except Exception as e:
             print(f"评估子项 {key} 时发生错误: {e}")
 
     # 按照 dataId 统一排序
     all_response.sort(key=lambda x: x.get("dataId", 0))
 
+    # 动态权重归一化：仅在有数据的类别间按比例分配权重
+    if active_keys:
+        total_active_weight = sum(base_weights[k] for k in active_keys)
+        normalized_weights = {k: base_weights[k] / total_active_weight for k in active_keys}
+        final_score = sum(scores[k] * normalized_weights[k] for k in active_keys)
+    else:
+        final_score = 0.0
+
     # 汇总最终报告
     final_report = {
         'casual_reasoning': scores['causality'],
         'common_sense_logical_reasoning': scores['logic'],
         'mathematical_reasoning': scores['math'],
-        'final_score': round(sum(scores[k] * weights[k] for k in weights), 4)
+        'final_score': round(final_score, 4)
     }
 
     print(all_response)
